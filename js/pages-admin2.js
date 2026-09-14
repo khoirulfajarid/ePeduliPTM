@@ -465,10 +465,35 @@ PAGES.pasienDetail = {
     document.getElementById('rm-wa').addEventListener('click', () => this.dialogReminder(p, 'WhatsApp'));
     document.getElementById('rm-email').addEventListener('click', () => this.dialogReminder(p, 'Email'));
 
-    document.getElementById('rm-simpan-status').addEventListener('click', async () => {
+    /* Prinsip 2 — pembaruan optimistik.
+       Badge kehadiran berubah seketika, pesan konfirmasi muncul seketika, dan
+       pengiriman ke server berjalan di latar belakang. Bila server menolak,
+       tampilan dikembalikan ke keadaan semula beserta penjelasannya. */
+    document.getElementById('rm-simpan-status').addEventListener('click', () => {
       const status = Form.nilai('rm-status');
-      const res = await API.kirim('updateKunjungan', { id: p.id, status });
-      if (res.success) Router.muat();
+      const semula = p.statusKunjungan;
+      if (status === semula) { UI.toast('Status kunjungan tidak berubah.', 'info'); return; }
+
+      const gambar = (nilai) => {
+        p.statusKunjungan = nilai;
+        const sel = document.getElementById('rm-status');
+        if (sel) sel.value = nilai;
+        const kartu = document.querySelector('#rm-isi .card-pad');
+        if (kartu) kartu.classList.toggle('sinkron', false);
+      };
+
+      gambar(status);
+      const tombol = document.getElementById('rm-simpan-status');
+      tombol.classList.add('sinkron');
+      UI.toast('Status kunjungan diperbarui.', 'success');
+
+      API.kirimLatar('updateKunjungan', { id: p.id, status }, () => {
+        gambar(semula);
+        UI.toast('Perubahan dibatalkan — status dikembalikan ke "' + semula + '".', 'error');
+      });
+
+      // Segarkan angka kepatuhan setelah server sempat memproses.
+      setTimeout(() => { tombol.classList.remove('sinkron'); Router.muat({ diam: true }); }, 1400);
     });
 
     this._pasangTab();

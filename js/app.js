@@ -28,18 +28,23 @@ const Router = {
   /* ----------------------------------------------------------------------
      MENU SIDEBAR — urutan sesuai PRD Seksi 7.2
      ---------------------------------------------------------------------- */
+  /* `aksi` dipakai untuk pra-pasok: begitu kursor menyentuh menu, datanya
+     sudah mulai ditarik sebelum jarinya sempat mengklik.                    */
   MENU: [
-    { hash: '#/dashboard',  ikon: 'dashboard', teks: 'Dashboard (Ringkasan)' },
-    { hash: '#/pasien',     ikon: 'pasien',    teks: 'Pasien PTM' },
-    { hash: '#/jadwal',     ikon: 'jadwal',    teks: 'Jadwal & Reminder' },
-    { hash: '#/pengumuman', ikon: 'megafon',   teks: 'Pengumuman' },
-    { hash: '#/laporan',    ikon: 'laporan',   teks: 'Laporan Pelayanan' },
-    { hash: '#/akun',       ikon: 'perisai',   teks: 'Verifikasi Akun Staff', hanyaSuper: true },
-    { hash: '#/pengaturan', ikon: 'gear',      teks: 'Pengaturan Sistem' }
+    { hash: '#/dashboard',  ikon: 'dashboard', teks: 'Dashboard (Ringkasan)',   aksi: 'dashboard' },
+    { hash: '#/pasien',     ikon: 'pasien',    teks: 'Pasien PTM',              aksi: 'listPasien' },
+    { hash: '#/jadwal',     ikon: 'jadwal',    teks: 'Jadwal & Reminder',       aksi: 'listPasien' },
+    { hash: '#/pengumuman', ikon: 'megafon',   teks: 'Pengumuman',              aksi: 'listPengumuman' },
+    { hash: '#/laporan',    ikon: 'laporan',   teks: 'Laporan Pelayanan',       aksi: 'getLaporan' },
+    { hash: '#/akun',       ikon: 'perisai',   teks: 'Verifikasi Akun Staff',   aksi: 'listAkun', hanyaSuper: true },
+    { hash: '#/pengaturan', ikon: 'gear',      teks: 'Pengaturan Sistem',       aksi: 'getPengaturan' }
   ],
 
   _halamanAktif: null,
   _paramAktif: {},
+  _shellAktif: null,      // kerangka yang sedang terpasang: app | publik | polos
+  _snapshot: {},          // { kunciRute: { html, d } } — gambar terakhir tiap halaman
+  _giliran: 0,            // penanda anti balapan antar navigasi cepat
 
   /* ----------------------------------------------------------------------
      PENCOCOKAN RUTE
@@ -85,58 +90,157 @@ const Router = {
   },
 
   /* ----------------------------------------------------------------------
-     PEMUATAN HALAMAN
+     PEMUATAN HALAMAN — tiga langkah, tidak satu pun memblokir layar
+     ----------------------------------------------------------------------
+     1. Kerangka (sidebar + topbar) dipasang SEKALI, tidak pernah dibangun
+        ulang saat berpindah menu.
+     2. Konten digambar SEGERA dari gambar terakhir yang tersimpan; bila
+        belum pernah dibuka, tampilkan kerangka isi (skeleton) — bukan
+        spinner layar penuh.
+     3. Data diambil; karena Store mengembalikan simpanan lebih dulu, langkah
+        ini biasanya selesai dalam hitungan milidetik.
      ---------------------------------------------------------------------- */
-  async muat() {
+  async muat(opsi) {
+    const o = opsi || {};
     const jalur = location.hash.replace(/^#/, '') || '/';
     const hasil = this.cocokkan(jalur);
-    const app = document.getElementById('app');
 
-    // Tutup dialog & laci navigasi yang mungkin masih terbuka.
-    UI.tutupModal();
-    document.body.classList.remove('nav-open');
-
-    if (!hasil || !PAGES[hasil.halaman]) {
-      app.innerHTML = this._shellPolos(
-        '<div class="public-wrap">' +
-          UI.kosong('Halaman tidak ditemukan',
-            'Alamat "' + UI.esc(jalur) + '" tidak dikenali sistem. Kembali ke beranda untuk melanjutkan.', 'peringatan') +
-          '<div class="center"><button class="btn btn-primary btn-inline" data-ke="#/">Kembali ke Beranda</button></div>' +
-        '</div>');
-      this._pasangNavigasi();
-      return;
+    if (!o.diam) {
+      UI.tutupModal();
+      document.body.classList.remove('nav-open');
     }
+
+    if (!hasil || !PAGES[hasil.halaman]) return this._tampilkan404(jalur);
 
     const halaman = PAGES[hasil.halaman];
     if (!this.izinkan(halaman)) return;
 
+    const giliran = ++this._giliran;
     this._halamanAktif = hasil.halaman;
     this._paramAktif = hasil.params;
     document.title = halaman.judul + ' — ' + CONFIG.NAMA_APP;
 
-    // Kerangka sementara agar layar tidak berkedip kosong saat memuat.
-    app.innerHTML = this._bungkus(halaman,
-      '<div class="col" style="gap:16px">' +
-        '<div class="skeleton sk-card"></div>' +
-        '<div class="skeleton sk-card"></div>' +
-      '</div>');
-    this._pasangNavigasi();
+    // --- Langkah 1: pastikan kerangka yang benar sudah terpasang -----------
+    this._pasangShell(halaman);
+    this._tandaiNavAktif();
 
+    const konten = document.getElementById('konten');
+    const kunci = this._kunciRute(halaman, hasil.params);
+
+    // --- Langkah 2: gambar segera dari simpanan ----------------------------
+    let sudahTergambar = false;
+    const simpanan = halaman.tanpaSnapshot ? null : this._snapshot[kunci];
+
+    if (simpanan && !o.diam) {
+      konten.innerHTML = simpanan.html;
+      if (simpanan.d !== undefined) halaman._d = simpanan.d;
+      this._jalankanPasang(halaman, hasil.params);
+      sudahTergambar = true;
+    } else if (!o.diam) {
+      konten.innerHTML = this._kerangkaIsi(halaman);
+    }
+
+    if (!o.diam) window.scrollTo(0, 0);
+
+    // --- Langkah 3: muat data (umumnya langsung dari cache) ----------------
     let isi;
     try {
       isi = await halaman.muat(hasil.params);
     } catch (err) {
-      isi = UI.kosong('Terjadi kesalahan saat menampilkan halaman', String(err && err.message ? err.message : err), 'peringatan');
+      isi = UI.kosong('Terjadi kesalahan saat menampilkan halaman',
+        String(err && err.message ? err.message : err), 'peringatan');
     }
 
-    app.innerHTML = this._bungkus(halaman, isi);
-    window.scrollTo(0, 0);
+    // Pengguna sudah berpindah ke halaman lain — buang hasil yang basi ini.
+    if (giliran !== this._giliran) return;
 
-    this._pasangNavigasi();
-    if (halaman.pasang) {
-      try { halaman.pasang(hasil.params); }
-      catch (err) { UI.toast('Sebagian interaksi halaman gagal dipasang: ' + err.message, 'error'); }
+    // Tidak ada perubahan dibanding yang sudah terlihat: jangan ganggu layar
+    // (fokus input, posisi gulir, dan animasi tetap utuh).
+    if (sudahTergambar && simpanan && simpanan.html === isi) return;
+
+    konten.innerHTML = isi;
+    if (!halaman.tanpaSnapshot) this._snapshot[kunci] = { html: isi, d: halaman._d };
+    this._jalankanPasang(halaman, hasil.params);
+
+    if (!sudahTergambar && !o.diam) {
+      konten.classList.remove('konten-masuk');
+      void konten.offsetWidth;                 // paksa restart animasi
+      konten.classList.add('konten-masuk');
     }
+  },
+
+  _jalankanPasang(halaman, params) {
+    if (!halaman.pasang) return;
+    try { halaman.pasang(params); }
+    catch (err) { UI.toast('Sebagian interaksi halaman gagal dipasang: ' + err.message, 'error'); }
+  },
+
+  /** Kunci snapshot: halaman yang punya filter internal menyertakannya. */
+  _kunciRute(halaman, params) {
+    const dasar = this._halamanAktif + '|' + JSON.stringify(params || {});
+    return halaman.kunciCache ? dasar + '|' + halaman.kunciCache() : dasar;
+  },
+
+  /** Kerangka isi per halaman — lebih menenangkan daripada layar kosong. */
+  _kerangkaIsi(halaman) {
+    if (halaman.shell !== 'app') {
+      return '<div class="public-wrap"><div class="skeleton sk-card" style="height:220px"></div></div>';
+    }
+    return '<div class="col" style="gap:24px">' +
+        '<div class="skeleton" style="height:96px;border-radius:1rem"></div>' +
+        '<div class="kpi-grid">' +
+          '<div class="skeleton sk-card"></div><div class="skeleton sk-card"></div>' +
+          '<div class="skeleton sk-card"></div><div class="skeleton sk-card"></div>' +
+        '</div>' +
+        '<div class="skeleton" style="height:320px;border-radius:1rem"></div>' +
+      '</div>';
+  },
+
+  _tampilkan404(jalur) {
+    this._shellAktif = null;
+    document.getElementById('app').innerHTML = this._shellPolos(
+      '<div class="public-wrap">' +
+        UI.kosong('Halaman tidak ditemukan',
+          'Alamat "' + UI.esc(jalur) + '" tidak dikenali sistem. Kembali ke beranda untuk melanjutkan.', 'peringatan') +
+        '<div class="center"><button class="btn btn-primary btn-inline" data-ke="#/">Kembali ke Beranda</button></div>' +
+      '</div>');
+  },
+
+  /**
+   * Pasang kerangka hanya bila jenisnya berubah. Inilah yang menghilangkan
+   * kedipan sidebar dan pembangunan ulang DOM di setiap perpindahan menu.
+   */
+  _pasangShell(halaman) {
+    const app = document.getElementById('app');
+    const perlu = halaman.shell || 'polos';
+
+    if (this._shellAktif === perlu && document.getElementById('konten')) {
+      if (perlu === 'app') this._segarkanIdentitas();
+      return;
+    }
+
+    app.innerHTML = this._bungkus(halaman, '');
+    this._shellAktif = perlu;
+    this._pasangKerangka();
+  },
+
+  /** Perbarui nama & foto di topbar tanpa menggambar ulang apa pun. */
+  _segarkanIdentitas() {
+    const u = API.user || {};
+    const nama = document.querySelector('#nav-user .u-name');
+    const peran = document.querySelector('#nav-user .u-role');
+    if (nama && nama.textContent !== (u.nama || '-')) nama.textContent = u.nama || '-';
+    if (peran && peran.textContent !== (u.peran || '')) peran.textContent = u.peran || '';
+  },
+
+  /** Tandai menu aktif lewat pengubahan kelas — tanpa render ulang. */
+  _tandaiNavAktif() {
+    const aktif = '#' + (location.hash.replace(/^#/, '') || '/');
+    document.querySelectorAll('.nav-item[data-ke]').forEach((b) => {
+      const h = b.dataset.ke;
+      const nyala = aktif === h || (h !== '#/dashboard' && aktif.indexOf(h) === 0);
+      b.classList.toggle('is-active', nyala);
+    });
   },
 
   /* ----------------------------------------------------------------------
@@ -185,7 +289,8 @@ const Router = {
       .filter(m => !m.hanyaSuper || API.isSuperAdmin())
       .map(m => {
         const nyala = aktif === m.hash || (m.hash !== '#/dashboard' && aktif.indexOf(m.hash) === 0);
-        return '<button class="nav-item' + (nyala ? ' is-active' : '') + '" data-ke="' + m.hash + '">' +
+        return '<button class="nav-item' + (nyala ? ' is-active' : '') + '" data-ke="' + m.hash +
+          '" data-prapasok="' + m.aksi + '">' +
           UI.ikon(m.ikon) + '<span>' + UI.esc(m.teks) + '</span></button>';
       }).join('');
 
@@ -248,52 +353,58 @@ const Router = {
   },
 
   /* ----------------------------------------------------------------------
-     PEMASANGAN INTERAKSI KERANGKA
+     INTERAKSI GLOBAL — dipasang SEKALI seumur hidup halaman
+     ----------------------------------------------------------------------
+     Memakai delegasi peristiwa pada document, sehingga konten yang digambar
+     ulang tidak perlu memasang ulang penangan apa pun. Ini menghapus ratusan
+     addEventListener per navigasi sekaligus mencegah kebocoran penangan.
      ---------------------------------------------------------------------- */
-  _pasangNavigasi() {
-    const app = document.getElementById('app');
+  pasangGlobal() {
+    if (this._globalTerpasang) return;
+    this._globalTerpasang = true;
 
-    // Navigasi deklaratif: elemen apa pun dengan data-ke berpindah halaman.
-    app.querySelectorAll('[data-ke]').forEach(el => {
-      if (el.dataset.terpasang) return;
-      el.dataset.terpasang = '1';
-      el.addEventListener('click', (e) => {
+    document.addEventListener('click', (e) => {
+      // Navigasi deklaratif: elemen apa pun dengan data-ke berpindah halaman.
+      const nav = e.target.closest('[data-ke]');
+      if (nav) {
         e.preventDefault();
-        location.hash = el.dataset.ke;
-      });
-    });
+        document.body.classList.remove('nav-open');
+        if (nav.closest('.modal-scrim')) UI.tutupModal();   // tautan di dalam dialog
+        const tujuan = nav.dataset.ke;
+        if (location.hash === tujuan) this.muat();   // klik menu yang sama = muat ulang
+        else location.hash = tujuan;
+        return;
+      }
 
-    // Gulir ke bagian tertentu pada halaman publik.
-    app.querySelectorAll('[data-gulir]').forEach(el => {
-      el.addEventListener('click', () => {
+      // Gulir ke bagian tertentu pada halaman publik.
+      const gulir = e.target.closest('[data-gulir]');
+      if (gulir) {
         const bagian = document.querySelectorAll('.public-wrap > section');
-        const indeks = el.dataset.gulir === 'cara' ? 1 : 2;
+        const indeks = gulir.dataset.gulir === 'cara' ? 1 : 2;
         if (bagian[indeks]) bagian[indeks].scrollIntoView({ behavior: 'smooth', block: 'start' });
-      });
+        return;
+      }
+
+      if (e.target.closest('[data-buka-nav]'))  { document.body.classList.toggle('nav-open'); return; }
+      if (e.target.closest('[data-tutup-nav]')) { document.body.classList.remove('nav-open'); return; }
+
+      if (e.target.closest('#nav-lonceng')) { this._dialogNotifikasi(); return; }
+      if (e.target.closest('#nav-user'))    { this._dialogProfil(); return; }
+
+      if (e.target.closest('#nav-keluar')) { this._keluar(); return; }
     });
 
-    // Laci navigasi seluler.
-    const buka = app.querySelector('[data-buka-nav]');
-    if (buka) buka.addEventListener('click', () => document.body.classList.toggle('nav-open'));
-    const scrim = app.querySelector('[data-tutup-nav]');
-    if (scrim) scrim.addEventListener('click', () => document.body.classList.remove('nav-open'));
-    app.querySelectorAll('.nav-item').forEach(b =>
-      b.addEventListener('click', () => document.body.classList.remove('nav-open')));
-
-    // Keluar dari sistem.
-    const keluar = document.getElementById('nav-keluar');
-    if (keluar) keluar.addEventListener('click', async () => {
-      if (!await UI.konfirmasi('Keluar dari Sistem',
-        'Sesi Anda akan diakhiri dan token akses dihapus dari perangkat ini. Lanjutkan?')) return;
-      await API.post('logout', { token: API.token });
-      API.hapusSesi();
-      location.hash = '#/masuk';
+    // Pra-pasok saat kursor menyentuh menu: data mulai ditarik sebelum diklik.
+    document.addEventListener('mouseover', (e) => {
+      const item = e.target.closest('.nav-item[data-prapasok]');
+      if (!item || item.dataset.sudahPrapasok) return;
+      item.dataset.sudahPrapasok = '1';
+      API.prapasok(item.dataset.prapasok, {});
     });
 
-    // Pencarian global menuju daftar pasien.
-    const cari = document.getElementById('nav-cari');
-    if (cari) cari.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
+    // Pencarian global (Enter) menuju daftar pasien.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !e.target.matches('#nav-cari')) return;
       const q = e.target.value.trim();
       if (!q) return;
       PAGES.pasien._filter = { halaman: 1, cari: q, jenisPtm: '', statusKunjungan: '', klaster: '', filterCepat: '' };
@@ -301,13 +412,38 @@ const Router = {
       else location.hash = '#/pasien';
     });
 
-    // Notifikasi ringkas.
-    const lonceng = document.getElementById('nav-lonceng');
-    if (lonceng) lonceng.addEventListener('click', () => this._dialogNotifikasi());
+    // Penyegaran latar belakang membawa data baru → gambar ulang diam-diam.
+    Store.onSegar = () => {
+      if (this._shellAktif && document.getElementById('konten')) this.muat({ diam: true });
+    };
 
-    // Menu pengguna.
-    const user = document.getElementById('nav-user');
-    if (user) user.addEventListener('click', () => this._dialogProfil());
+    // Kembali ke tab: pastikan angka yang terlihat masih mutakhir.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && API.masuk()) this.muat({ diam: true });
+    });
+  },
+
+  async _keluar() {
+    if (!await UI.konfirmasi('Keluar dari Sistem',
+      'Sesi Anda akan diakhiri dan seluruh data yang tersimpan di perangkat ini dihapus. Lanjutkan?')) return;
+    API.post('logout', { token: API.token });   // tidak perlu ditunggu
+    API.hapusSesi();
+    this._snapshot = {};
+    this._shellAktif = null;
+    location.hash = '#/masuk';
+  },
+
+  /** Penangan yang hanya ada selama kerangka tertentu terpasang. */
+  _pasangKerangka() {
+    if (this._shellAktif !== 'app') return;
+
+    // Saat peramban menganggur, tarik data menu yang paling mungkin dibuka
+    // berikutnya. Tidak mengganggu pemuatan halaman yang sedang berjalan.
+    const prapasokAwal = () => {
+      ['listPasien', 'listPengumuman'].forEach(a => API.prapasok(a, {}));
+    };
+    if (window.requestIdleCallback) requestIdleCallback(prapasokAwal, { timeout: 2500 });
+    else setTimeout(prapasokAwal, 1800);
   },
 
   async _dialogNotifikasi() {
@@ -333,11 +469,7 @@ const Router = {
         : '<p class="muted">Tidak ada notifikasi yang dapat dimuat saat ini.</p>',
       aksi: [{ teks: 'Tutup', kelas: 'btn-ghost' }]
     });
-
-    document.querySelectorAll('.modal [data-ke]').forEach(el => el.addEventListener('click', () => {
-      location.hash = el.dataset.ke;
-      UI.tutupModal();
-    }));
+    // Tautan [data-ke] di dalam dialog sudah ditangani delegasi global.
   },
 
   _notif(ikon, judul, isi, ke) {
@@ -382,10 +514,16 @@ const Router = {
    ========================================================================== */
 (function mulai() {
   API.muatSesi();
+  Store.bersihkan();          // buang cache kedaluwarsa dari sesi sebelumnya
 
   window.addEventListener('hashchange', () => Router.muat());
 
-  document.addEventListener('DOMContentLoaded', () => {
+  const jalankan = () => {
+    if (Router._sudahMulai) return;
+    Router._sudahMulai = true;
+
+    Router.pasangGlobal();
+
     // Arahkan pengguna yang sudah masuk ke beranda perannya masing-masing.
     if (!location.hash || location.hash === '#' || location.hash === '#/') {
       if (API.isPetugas()) location.hash = '#/dashboard';
@@ -394,16 +532,21 @@ const Router = {
 
     Router.muat();
 
+    // Satu permintaan komposit mengisi cache dashboard, pasien, pengaturan,
+    // dan antrean verifikasi sekaligus — halaman-halaman itu lalu terbuka
+    // tanpa menyentuh jaringan lagi.
+    if (API.isPetugas()) {
+      const awal = () => API.bootstrap({ diam: true });
+      if (window.requestIdleCallback) requestIdleCallback(awal, { timeout: 3000 });
+      else setTimeout(awal, 900);
+    }
+
     if (CONFIG.MODE_DEMO) {
       setTimeout(() => UI.toast(
         'Mode demo aktif — isi GAS_URL pada js/config.js untuk menghubungkan backend Apps Script.', 'info'), 1200);
     }
-  });
+  };
 
-  // Bila DOM sudah siap sebelum skrip ini dijalankan.
-  if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    setTimeout(() => {
-      if (!document.getElementById('app').innerHTML.trim()) Router.muat();
-    }, 0);
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', jalankan);
+  else jalankan();
 })();

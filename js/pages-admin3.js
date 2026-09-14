@@ -245,9 +245,24 @@ PAGES.pengumuman = {
     });
 
     /* ---- Aksi baris ---- */
-    app.querySelectorAll('[data-toggle]').forEach(c => c.addEventListener('change', async () => {
-      const res = await API.kirim('togglePengumuman', { id: c.dataset.toggle, aktif: c.checked });
-      if (!res.success) c.checked = !c.checked;
+    /* Sakelar tayang: posisinya sudah berubah saat jari diangkat. Sinkronisasi
+       ke server tidak ditunggu; bila gagal, sakelar kembali sendiri. */
+    app.querySelectorAll('[data-toggle]').forEach(c => c.addEventListener('change', () => {
+      const id = c.dataset.toggle;
+      const aktif = c.checked;
+
+      const ket = c.closest('td') && c.closest('td').querySelector('.cell-meta');
+      if (ket) ket.textContent = aktif ? 'Tayang' : 'Nonaktif';
+
+      const p = this._d.pengumuman.filter(x => x.id === id)[0];
+      if (p) p.aktif = aktif;
+      UI.toast('Pengumuman kini ' + (aktif ? 'TAYANG' : 'NONAKTIF') + '.', 'success');
+
+      API.kirimLatar('togglePengumuman', { id, aktif }, () => {
+        c.checked = !aktif;
+        if (ket) ket.textContent = !aktif ? 'Tayang' : 'Nonaktif';
+        if (p) p.aktif = !aktif;
+      });
     }));
 
     app.querySelectorAll('[data-sunting]').forEach(b => b.addEventListener('click', () => {
@@ -649,9 +664,32 @@ PAGES.akun = {
         : 'Akun ' + email + ' tidak akan dapat masuk ke sistem.\n\n' +
           'Data akun tetap tersimpan sebagai arsip dan dapat diaktifkan kembali kapan saja. Lanjutkan?';
 
-      if (!await UI.konfirmasi(label, pesan, { bahaya: status !== 'Disetujui', ya: status === 'Disetujui' ? 'Ya, Setujui' : 'Ya, Tolak' })) return;
-      const res = await API.kirim('verifikasiAkun', { email, status });
-      if (res.success) Router.muat();
+      if (!await UI.konfirmasi(label, pesan,
+        { bahaya: status !== 'Disetujui', ya: status === 'Disetujui' ? 'Ya, Setujui' : 'Ya, Tolak' })) return;
+
+      /* Optimistik: kartu antrean langsung menghilang dan penghitung menyusut,
+         sehingga Super Admin dapat memproses antrean beruntun tanpa jeda. */
+      const akun = this._d.akun.filter(a => a.email === email)[0];
+      const statusLama = akun ? akun.status : null;
+      if (akun) akun.status = status;
+
+      const kartu = app.querySelector('[data-tinjau="' + email + '"]');
+      const wadah = kartu ? kartu.closest('.metric') : null;
+      if (wadah) {
+        wadah.style.transition = 'opacity .18s ease, transform .18s ease';
+        wadah.style.opacity = '0';
+        wadah.style.transform = 'translateX(12px)';
+        setTimeout(() => wadah.remove(), 190);
+      }
+      UI.toast('Akun ' + email + ' di-' + status.toLowerCase() + '.', 'success');
+
+      API.kirimLatar('verifikasiAkun', { email, status }, () => {
+        if (akun && statusLama) akun.status = statusLama;
+        Router.muat();                                   // gambar ulang keadaan sebenarnya
+      });
+
+      // Tarik angka ringkasan terbaru dari server tanpa mengganggu layar.
+      setTimeout(() => Router.muat({ diam: true }), 1500);
     };
 
     app.querySelectorAll('[data-setuju]').forEach(b =>

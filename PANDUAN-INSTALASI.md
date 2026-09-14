@@ -109,6 +109,23 @@ berisi `👤 Pasien`, `📣 Pengumuman`, `📤 Ekspor_Laporan`, dan berkas
 3. Verifikasi di menu **⏰ Triggers** (ikon jam di sidebar kiri) — harus ada
    satu trigger `jalankanReminderHarian`, Time-driven, Day timer, 7am–8am.
 
+## A4b. (Opsional) Pemanasan cache agar dashboard selalu ringan
+
+Backend menyimpan setiap sheet di `CacheService` agar dashboard tidak membaca
+spreadsheet berulang kali. Cache pertama setelah kedaluwarsa selalu "dingin" —
+petugas pertama yang membuka dashboard pagi itu yang menanggung waktu bacanya.
+
+Untuk menghindarinya, pilih fungsi **`pasangTriggerWarmup`** → **▶ Run**.
+Cache akan dipanaskan setiap 30 menit, sehingga dashboard hampir selalu
+tersaji dari cache.
+
+> Mesin reminder juga memanaskan cache secara otomatis setiap selesai
+> mengirim pesan pagi, jadi langkah ini murni penyempurnaan.
+>
+> Anda juga bisa menjalankan **`warmupCache`** secara manual kapan saja —
+> berguna setelah mengubah data langsung lewat spreadsheet, agar perubahan
+> segera terlihat di dashboard tanpa menunggu cache kedaluwarsa.
+
 ## A5. Isi token WhatsApp Fonnte
 
 Lewati langkah ini bila untuk sementara hanya ingin memakai pengingat email.
@@ -472,7 +489,10 @@ lama memang struktur yang keliru.
 | WhatsApp gagal, email berhasil | `FONNTE_TOKEN` kosong atau perangkat terputus | Isi token di Script Properties, cek dashboard Fonnte |
 | "Kuota notifikasi harian habis" | Batas harian tercapai | Naikkan `KUOTA_HARIAN` di sheet `Pengaturan` (perhatikan batas Gmail akun Anda) |
 | Foto pasien gagal diunggah | Ukuran melebihi 2 MB | Kompres foto, atau naikkan `MAX_UPLOAD_BYTES` di `Kode.gs` |
-| Data lama masih muncul setelah diubah | Cache server 5 menit | Tunggu sebentar, atau klik **Refresh Data** di dashboard |
+| Data lama masih muncul setelah diubah | Cache server & klien | Klik **Refresh Data** di dashboard; bila data diubah langsung lewat spreadsheet, jalankan `warmupCache()` di Apps Script |
+| Perubahan tersimpan tapi layar belum berubah | Tampilan optimistik sedang menunggu penyegaran | Layar menyesuaikan sendiri dalam beberapa detik; klik menu yang sama untuk memaksa muat ulang |
+| Muncul "Perubahan tersimpan di perangkat, tetapi gagal dikirim" | Koneksi terputus saat sinkronisasi latar belakang | Tampilan otomatis dikembalikan; ulangi setelah koneksi pulih |
+| Dialog "Lanjutkan Isian Sebelumnya?" muncul | Ada draf formulir yang belum disimpan | Pilih **Lanjutkan Draf** untuk memulihkan, atau **Mulai Baru** untuk membuangnya |
 
 ---
 

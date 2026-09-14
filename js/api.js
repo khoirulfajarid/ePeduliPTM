@@ -28,6 +28,9 @@ const API = {
 
   hapusSesi() {
     this.sesi = null;
+    this._sedangJalan = {};
+    // Data medis tidak boleh tertinggal di perangkat setelah petugas keluar.
+    Store.kosongkan();
     try { localStorage.removeItem(CONFIG.KUNCI_SESI); } catch (e) { /* abaikan */ }
   },
 
@@ -100,32 +103,130 @@ const API = {
   },
 
   /* ----------------------------------------------------------------------
-     PEMBUNGKUS AKSI — memanggil dengan indikator muat & notifikasi seragam
+     PEMBACAAN DATA — stale-while-revalidate
+     ----------------------------------------------------------------------
+     Layar tidak pernah menunggu jaringan bila ada data tersimpan. Jaringan
+     hanya dipakai untuk memperbarui apa yang sudah tergambar.
      ---------------------------------------------------------------------- */
 
-  /** Ambil data untuk ditampilkan. Mengembalikan payload atau null bila gagal. */
+  /** Permintaan yang sedang berjalan, agar tidak ada panggilan kembar. */
+  _sedangJalan: {},
+
+  /**
+   * Ambil data untuk ditampilkan.
+   *
+   * opsi:
+   *   diam       — jangan tampilkan notifikasi kegagalan
+   *   segar      — abaikan cache, paksa ambil dari jaringan
+   *   tanpaCache — jangan baca maupun tulis cache
+   */
   async ambil(action, data, opsi) {
     const o = opsi || {};
-    if (!o.diam) UI.loading(true);
-    const res = await this.post(action, data);
-    if (!o.diam) UI.loading(false);
+
+    if (!o.tanpaCache && !o.segar) {
+      const simpanan = Store.baca(action, data);
+      if (simpanan) {
+        // Sudah basi → segarkan diam-diam, tetapi kembalikan yang lama SEKARANG
+        // supaya halaman tergambar tanpa jeda.
+        if (simpanan.basi) this.segarkan(action, data);
+        return simpanan.data;
+      }
+    }
+
+    const res = await this._sekali(action, data);
 
     if (!res.success) {
       if (!o.diam) UI.toast(res.message, 'error');
       return null;
     }
+    if (!o.tanpaCache) Store.tulis(action, data, res.data);
     return res.data;
   },
 
-  /** Kirim perubahan. Menampilkan notifikasi sukses/gagal secara otomatis. */
+  /** Permintaan jaringan dengan deduplikasi — dua pemanggil, satu permintaan. */
+  _sekali(action, data) {
+    const kunci = Store.kunci(action, data);
+    if (this._sedangJalan[kunci]) return this._sedangJalan[kunci];
+
+    const janji = this.post(action, data).finally(() => { delete this._sedangJalan[kunci]; });
+    this._sedangJalan[kunci] = janji;
+    return janji;
+  },
+
+  /**
+   * Penyegaran latar belakang. Tidak pernah memblokir antarmuka; bila data
+   * yang kembali berbeda, Store memberi tahu Router untuk menggambar ulang.
+   */
+  segarkan(action, data) {
+    this._sekali(action, data).then((res) => {
+      if (!res || !res.success) return;
+      const berubah = Store.berbeda(action, data, res.data);
+      Store.tulis(action, data, res.data);
+      if (berubah && typeof Store.onSegar === 'function') Store.onSegar(action, data, res.data);
+    }).catch(() => { /* penyegaran diam-diam: kegagalan tidak mengganggu pengguna */ });
+  },
+
+  /** Muat awal sesi petugas: satu permintaan untuk empat kebutuhan data. */
+  async bootstrap(opsi) {
+    const d = await this.ambil('bootstrap', {}, opsi);
+    if (!d) return null;
+
+    // Pecah hasil komposit ke cache masing-masing endpoint, sehingga halaman
+    // Pasien, Pengaturan, dan Verifikasi Akun ikut terisi tanpa permintaan baru.
+    if (d.dashboard)  Store.tulis('dashboard', {}, d.dashboard);
+    if (d.pengaturan) Store.tulis('getPengaturan', {}, d.pengaturan);
+    if (d.akun)       Store.tulis('listAkun', {}, d.akun);
+    return d;
+  },
+
+  /** Tarik data lebih awal (saat kursor menyentuh menu / peramban menganggur). */
+  prapasok(action, data) {
+    if (!this.masuk()) return;
+    const simpanan = Store.baca(action, data);
+    if (simpanan && !simpanan.basi) return;      // sudah segar, tidak perlu
+    this.segarkan(action, data);
+  },
+
+  /* ----------------------------------------------------------------------
+     PENULISAN DATA
+     ---------------------------------------------------------------------- */
+
+  /**
+   * Kirim perubahan dan tunggu hasilnya. Dipakai untuk aksi yang benar-benar
+   * perlu dipastikan sebelum layar berpindah (mis. menyimpan pasien baru).
+   */
   async kirim(action, data, opsi) {
     const o = opsi || {};
-    UI.loading(true);
+    if (!o.tanpaIndikator) UI.loading(true);
     const res = await this.post(action, data);
-    UI.loading(false);
+    if (!o.tanpaIndikator) UI.loading(false);
 
-    UI.toast(res.message, res.success ? 'success' : 'error');
+    if (res.success) Store.invalidasi(action);
+    if (!o.diam) UI.toast(res.message, res.success ? 'success' : 'error');
     return res;
+  },
+
+  /**
+   * Kirim perubahan TANPA menunggu (Prinsip 2: optimistic UI).
+   *
+   * Antarmuka sudah diperbarui lebih dulu oleh pemanggil. Fungsi ini hanya
+   * menyinkronkan ke server di latar belakang; bila gagal, `saatGagal`
+   * dipanggil agar pemanggil dapat mengembalikan tampilan ke keadaan semula.
+   */
+  kirimLatar(action, data, saatGagal) {
+    Store.invalidasi(action);
+
+    this.post(action, data).then((res) => {
+      if (res.success) {
+        Store.invalidasi(action);
+        return;
+      }
+      UI.toast(res.message || 'Perubahan gagal disimpan ke server.', 'error');
+      if (typeof saatGagal === 'function') saatGagal(res);
+    }).catch((err) => {
+      UI.toast('Perubahan tersimpan di perangkat, tetapi gagal dikirim ke server.', 'error');
+      if (typeof saatGagal === 'function') saatGagal({ success: false, message: String(err) });
+    });
   },
 
   /* ----------------------------------------------------------------------

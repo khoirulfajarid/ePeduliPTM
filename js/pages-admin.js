@@ -199,11 +199,24 @@ PAGES.pasien = {
   perluSesi: 'Petugas',
   _filter: { halaman: 1, cari: '', jenisPtm: '', statusKunjungan: '', klaster: '', filterCepat: '' },
 
+  /* Prinsip 2: seluruh populasi ditarik SATU kali, lalu pencarian, penyaringan,
+     dan paginasi dikerjakan di perangkat. Mengetik di kolom cari tidak lagi
+     memicu permintaan jaringan sama sekali. */
+  MUAT_SEKALIGUS: 1000,
+
+  /* Filter ikut menentukan kunci snapshot agar tampilan tersaring tidak
+     tertukar dengan tampilan penuh saat kembali dari halaman lain. */
+  kunciCache() { return JSON.stringify(this._filter); },
+
   async muat() {
-    const d = await API.ambil('listPasien', this._filter);
+    // Selalu minta kumpulan penuh; kunci cache-nya sama untuk semua filter.
+    const d = await API.ambil('listPasien', { halaman: 1, perHalaman: this.MUAT_SEKALIGUS });
     if (!d) return UI.kosong('Data tidak dapat dimuat', 'Periksa koneksi lalu muat ulang halaman.', 'peringatan');
+
+    this._semua = d.pasien || [];
     this._d = d;
     const s = d.statistik;
+    const tampil = this._saring();
 
     return '' +
     '<section class="kpi-grid">' +
@@ -221,7 +234,7 @@ PAGES.pasien = {
       '<div class="row-between wrap">' +
         '<div>' +
           '<h1 style="margin-bottom:6px">Daftar Pasien Penyakit Tidak Menular ' +
-            '<span class="badge badge-info badge-lg">' + UI.angka(d.total) + ' Terdata</span></h1>' +
+            '<span class="badge badge-info badge-lg">' + UI.angka(s.total) + ' Terdata</span></h1>' +
           '<p class="muted" style="margin:0">' + UI.esc(CONFIG.NAMA_FASKES) +
             ' — rekam pemantauan rutin, reminder WhatsApp, dan kehadiran layanan Posbindu</p>' +
         '</div>' +
@@ -270,14 +283,9 @@ PAGES.pasien = {
         '<table class="data"><thead><tr>' +
           '<th>Foto &amp; Pasien</th><th>Diagnosis PTM</th><th>Kontak &amp; Darurat</th>' +
           '<th>Jadwal Kunjungan Berikutnya</th><th>Status Reminder</th><th>Status Kehadiran</th><th class="right">Aksi</th>' +
-        '</tr></thead><tbody>' + this._baris(d.pasien) + '</tbody></table>' +
+        '</tr></thead><tbody id="ps-tbody">' + this._baris(tampil.baris) + '</tbody></table>' +
       '</div>' +
-      '<div class="card-foot row-between wrap">' +
-        '<span class="small muted">Menampilkan ' +
-          (d.total ? ((d.halaman - 1) * d.perHalaman + 1) : 0) + '–' +
-          Math.min(d.halaman * d.perHalaman, d.total) + ' dari ' + UI.angka(d.total) + ' pasien terdaftar</span>' +
-        '<div class="pagination">' + this._paginasi(d) + '</div>' +
-      '</div>' +
+      '<div class="card-foot row-between wrap" id="ps-kaki">' + this._kaki(tampil) + '</div>' +
     '</section>' +
 
     /* ---------- Kartu informasi bawah ---------- */
@@ -307,6 +315,69 @@ PAGES.pasien = {
           '&gt; 250 mg/dL wajib diarahkan ke dokter faskes tingkat pertama dalam 1×24 jam sesuai SOP Kemenkes.</p>' +
       '</div>' +
     '</section>';
+  },
+
+  /* ----------------------------------------------------------------------
+     PENYARINGAN LOKAL — 0 ms, tanpa jaringan
+     ---------------------------------------------------------------------- */
+  /** Terapkan seluruh filter, tanpa paginasi. Dipakai tabel dan ekspor. */
+  _semuaTersaring() {
+    const f = this._filter;
+    let rows = (this._semua || []).slice();
+
+    const cari = String(f.cari || '').trim().toLowerCase();
+    if (cari) {
+      rows = rows.filter(p =>
+        String(p.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+        String(p.nik || '').indexOf(cari) !== -1 ||
+        String(p.noBpjs || '').indexOf(cari) !== -1 ||
+        String(p.noHp || '').indexOf(cari) !== -1);
+    }
+    if (f.jenisPtm)        rows = rows.filter(p => p.jenisPtm === f.jenisPtm);
+    if (f.statusKunjungan) rows = rows.filter(p => p.statusKunjungan === f.statusKunjungan);
+    if (f.klaster)         rows = rows.filter(p => p.klaster === f.klaster);
+
+    const hariIni = UI.hariIni();
+    if (f.filterCepat === 'perluKontak') {
+      rows = rows.filter(p => p.tanggal === hariIni && p.statusKunjungan !== 'Sudah Berkunjung');
+    } else if (f.filterCepat === 'jadwalTertunda') {
+      rows = rows.filter(p => p.tanggal && p.tanggal < hariIni && p.statusKunjungan !== 'Sudah Berkunjung');
+    }
+    return rows;
+  },
+
+  /** Filter + paginasi untuk satu layar tabel. */
+  _saring() {
+    const rows = this._semuaTersaring();
+    const per = CONFIG.PER_HALAMAN;
+    const totalHalaman = Math.max(1, Math.ceil(rows.length / per));
+    const halaman = Math.min(Math.max(1, this._filter.halaman), totalHalaman);
+    this._filter.halaman = halaman;
+
+    return {
+      baris: rows.slice((halaman - 1) * per, halaman * per),
+      total: rows.length, halaman, perHalaman: per, totalHalaman
+    };
+  },
+
+  /** Gambar ulang HANYA tabel dan kakinya — sisa halaman tidak disentuh. */
+  _render() {
+    const t = this._saring();
+    const tbody = document.getElementById('ps-tbody');
+    const kaki = document.getElementById('ps-kaki');
+    if (!tbody || !kaki) return;
+
+    tbody.innerHTML = this._baris(t.baris);
+    kaki.innerHTML = this._kaki(t);
+    this._pasangBaris();
+  },
+
+  _kaki(t) {
+    return '<span class="small muted">Menampilkan ' +
+      (t.total ? ((t.halaman - 1) * t.perHalaman + 1) : 0) + '–' +
+      Math.min(t.halaman * t.perHalaman, t.total) + ' dari ' + UI.angka(t.total) + ' pasien' +
+      (t.total !== (this._semua || []).length ? ' (tersaring dari ' + UI.angka((this._semua || []).length) + ')' : ' terdaftar') +
+      '</span><div class="pagination">' + this._paginasi(t) + '</div>';
   },
 
   _baris(list) {
@@ -357,15 +428,58 @@ PAGES.pasien = {
     return h;
   },
 
+  /**
+   * Penangan untuk elemen di dalam tabel. Dipanggil ulang setiap kali tabel
+   * digambar ulang — hanya menyentuh baris yang terlihat (maksimum 10).
+   */
+  _pasangBaris() {
+    const app = document.getElementById('app');
+
+    app.querySelectorAll('[data-hal]').forEach(b => b.addEventListener('click', () => {
+      this._filter.halaman = Number(b.dataset.hal);
+      this._render();                                   // instan, tanpa jaringan
+      document.querySelector('#ps-tbody').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }));
+
+    app.querySelectorAll('[data-wa]').forEach(b => b.addEventListener('click', () => {
+      const p = (this._semua || []).filter(x => x.id === b.dataset.wa)[0];
+      if (p) PAGES.pasienDetail.dialogReminder(p);
+    }));
+
+    app.querySelectorAll('[data-hapus]').forEach(b => b.addEventListener('click', async () => {
+      const id = b.dataset.hapus;
+      const ok = await UI.konfirmasi('Hapus Data Pasien',
+        'Data pasien "' + b.dataset.nama + '" beserta relasinya akan dihapus permanen dari sheet Pasien.\n\n' +
+        'Tindakan ini tidak dapat dibatalkan. Lanjutkan?', { bahaya: true, ya: 'Ya, Hapus Permanen' });
+      if (!ok) return;
+
+      // Optimistic: baris hilang seketika, penghapusan disusulkan ke server.
+      const cadangan = (this._semua || []).slice();
+      this._semua = this._semua.filter(x => x.id !== id);
+      this._render();
+      UI.toast('Data pasien dihapus.', 'success');
+
+      API.kirimLatar('deletePasien', { id }, () => {
+        this._semua = cadangan;                          // kembalikan bila gagal
+        this._render();
+      });
+    }));
+  },
+
   pasang() {
     const app = document.getElementById('app');
 
-    const terapkan = () => { this._filter.halaman = 1; Router.muat(); };
+    /* Seluruh filter kini hanya menggambar ulang tabel — tidak ada permintaan
+       jaringan, tidak ada pemuatan ulang halaman. */
+    const terapkan = () => { this._filter.halaman = 1; this._render(); };
+
+    // Debounce 120 ms cukup untuk meredam ketikan beruntun; karena penyaringan
+    // lokal, tidak perlu jeda panjang seperti saat masih memanggil server.
     let tempo;
     document.getElementById('ps-cari').addEventListener('input', (e) => {
       clearTimeout(tempo);
       this._filter.cari = e.target.value;
-      tempo = setTimeout(terapkan, 420);
+      tempo = setTimeout(terapkan, 120);
     });
     document.getElementById('ps-ptm').addEventListener('change', (e) => { this._filter.jenisPtm = e.target.value; terapkan(); });
     document.getElementById('ps-hadir').addEventListener('change', (e) => { this._filter.statusKunjungan = e.target.value; terapkan(); });
@@ -373,35 +487,25 @@ PAGES.pasien = {
 
     document.getElementById('ps-reset').addEventListener('click', () => {
       this._filter = { halaman: 1, cari: '', jenisPtm: '', statusKunjungan: '', klaster: '', filterCepat: '' };
-      Router.muat();
+      document.getElementById('ps-cari').value = '';
+      ['ps-ptm', 'ps-hadir', 'ps-klaster'].forEach(id => { document.getElementById(id).value = ''; });
+      app.querySelectorAll('[data-cepat]').forEach(x => x.classList.remove('btn-primary'));
+      this._render();
     });
 
     app.querySelectorAll('[data-cepat]').forEach(b => b.addEventListener('click', () => {
-      this._filter.filterCepat = this._filter.filterCepat === b.dataset.cepat ? '' : b.dataset.cepat;
+      const nyala = this._filter.filterCepat !== b.dataset.cepat;
+      this._filter.filterCepat = nyala ? b.dataset.cepat : '';
+      app.querySelectorAll('[data-cepat]').forEach(x => x.classList.remove('btn-primary'));
+      if (nyala) b.classList.add('btn-primary');
       terapkan();
     }));
 
-    app.querySelectorAll('[data-hal]').forEach(b => b.addEventListener('click', () => {
-      this._filter.halaman = Number(b.dataset.hal);
-      Router.muat();
-    }));
+    this._pasangBaris();
 
-    app.querySelectorAll('[data-wa]').forEach(b => b.addEventListener('click', () => {
-      const p = this._d.pasien.filter(x => x.id === b.dataset.wa)[0];
-      if (p) PAGES.pasienDetail.dialogReminder(p);
-    }));
-
-    app.querySelectorAll('[data-hapus]').forEach(b => b.addEventListener('click', async () => {
-      const ok = await UI.konfirmasi('Hapus Data Pasien',
-        'Data pasien "' + b.dataset.nama + '" beserta relasinya akan dihapus permanen dari sheet Pasien.\n\n' +
-        'Tindakan ini tidak dapat dibatalkan. Lanjutkan?', { bahaya: true, ya: 'Ya, Hapus Permanen' });
-      if (!ok) return;
-      const res = await API.kirim('deletePasien', { id: b.dataset.hapus });
-      if (res.success) Router.muat();
-    }));
-
+    // Ekspor mengikuti filter yang sedang aktif, bukan hanya halaman terlihat.
     document.getElementById('ps-excel').addEventListener('click', () => {
-      Ekspor.csv('daftar-pasien-ptm-' + UI.hariIni(), this._d.pasien.map(p => ({
+      Ekspor.csv('daftar-pasien-ptm-' + UI.hariIni(), this._semuaTersaring().map(p => ({
         'ID Pasien': p.id, 'Nama': p.nama, 'NIK': p.nik, 'Usia': p.usia, 'Jenis Kelamin': p.jenisKelamin,
         'Diagnosis PTM': p.jenisPtm, 'No HP': p.noHp, 'Email': p.email, 'No BPJS': p.noBpjs,
         'Klaster': p.klaster, 'Tanggal Kontrol': p.tanggal, 'Jam': p.jam,
@@ -421,6 +525,16 @@ PAGES.pasienForm = {
   shell: 'app',
   perluSesi: 'Petugas',
   _berkas: { foto: null, lab: null, resep: null },
+
+  /* Formulir tidak boleh digambar dari snapshot — isian yang sedang diketik
+     akan tertimpa. Pemulihan isian ditangani mekanisme draf di bawah. */
+  tanpaSnapshot: true,
+
+  /* Semua kolom yang ikut disimpan sebagai draf otomatis. */
+  KOLOM_DRAF: ['f-nama', 'f-nik', 'f-lahir', 'f-alamat', 'f-hp', 'f-email',
+               'f-kel-nama', 'f-kel-hub', 'f-kel-hp', 'f-bpjs', 'f-klaster',
+               'f-dokter', 'f-kader', 'f-tgl', 'f-jam', 'f-catatan',
+               'f-sis', 'f-dia', 'f-gdp', 'f-hba', 'f-obat'],
 
   async muat(params) {
     this._berkas = { foto: null, lab: null, resep: null };
@@ -732,6 +846,8 @@ PAGES.pasienForm = {
           '<div class="card-foot">' +
             '<button class="btn btn-deep btn-block" id="fm-simpan2">' + UI.ikon('cekLingkar') +
               (this._id ? 'Simpan Perubahan' : 'Simpan Pasien Baru') + '</button>' +
+            '<div class="center" style="margin-top:10px"><span class="tiny muted" id="f-draf">' +
+              'Isian disimpan otomatis di perangkat ini</span></div>' +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -857,10 +973,83 @@ PAGES.pasienForm = {
       document.getElementById(id).addEventListener('input', () => this._hitungValidasi()));
     this._hitungValidasi();
 
+    /* ---- Draf otomatis (Prinsip 2) ----------------------------------------
+       Isian disimpan ke perangkat setiap kali berhenti mengetik, sehingga
+       kehilangan koneksi, salah klik, atau tab tertutup tidak menghapus
+       pekerjaan petugas. */
+    this._namaDraf = 'pasien_' + (this._id || 'baru');
+    this._pulihkanDraf();
+
+    let tempoDraf;
+    const tandaiDraf = () => {
+      clearTimeout(tempoDraf);
+      tempoDraf = setTimeout(() => this._simpanDraf(), 700);
+    };
+    this.KOLOM_DRAF.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.addEventListener('input', tandaiDraf); el.addEventListener('change', tandaiDraf); }
+    });
+    app.querySelectorAll('[data-ptm]').forEach(el => el.addEventListener('click', tandaiDraf));
+
     /* ---- Simpan ---- */
     const simpan = () => this._simpan();
     document.getElementById('fm-simpan').addEventListener('click', simpan);
     document.getElementById('fm-simpan2').addEventListener('click', simpan);
+  },
+
+  _simpanDraf() {
+    const data = {};
+    this.KOLOM_DRAF.forEach(id => { data[id] = Form.nilai(id); });
+    const ptm = document.querySelector('[name="f-ptm"]:checked');
+    if (ptm) data.ptm = ptm.value;
+    const jk = document.querySelector('[name="f-jk"]:checked');
+    if (jk) data.jk = jk.value;
+
+    // Jangan simpan draf kosong.
+    if (!data['f-nama'] && !data['f-nik']) return;
+
+    Store.simpanDraf(this._namaDraf, data);
+    const tanda = document.getElementById('f-draf');
+    if (tanda) {
+      tanda.textContent = 'Draf tersimpan ' + new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+      tanda.className = 'tiny muted';
+    }
+  },
+
+  _pulihkanDraf() {
+    const draf = Store.bacaDraf(this._namaDraf);
+    if (!draf) return;
+
+    // Pada mode sunting, draf hanya ditawarkan bila benar-benar berbeda.
+    const sudahAdaIsi = this._p && String(draf['f-nama'] || '') === String(this._p.nama || '');
+    if (sudahAdaIsi) { Store.hapusDraf(this._namaDraf); return; }
+
+    UI.modal({
+      judul: 'Lanjutkan Isian Sebelumnya?',
+      sub: 'Ditemukan draf formulir yang belum sempat disimpan.',
+      isi: '<p class="muted" style="line-height:1.75">Isian atas nama <b>' +
+             UI.esc(draf['f-nama'] || '(tanpa nama)') + '</b> tersimpan di perangkat ini. ' +
+             'Anda dapat melanjutkannya atau memulai formulir baru yang kosong.</p>' +
+           '<div class="callout callout-neutral">' + UI.ikon('info') +
+             '<div>Berkas foto, hasil lab, dan resep tidak ikut tersimpan dalam draf — ' +
+             'unggah ulang sebelum menyimpan.</div></div>',
+      aksi: [
+        { teks: 'Mulai Baru', kelas: 'btn-ghost', onClick: () => Store.hapusDraf(this._namaDraf) },
+        { teks: 'Lanjutkan Draf', kelas: 'btn-primary', ikon: 'pena', onClick: () => {
+            this.KOLOM_DRAF.forEach(id => { if (draf[id] !== undefined) Form.set(id, draf[id]); });
+            if (draf.ptm) {
+              const kartu = document.querySelector('[data-ptm="' + draf.ptm + '"]');
+              if (kartu) kartu.click();
+            }
+            if (draf.jk) {
+              const r = document.querySelector('[name="f-jk"][value="' + draf.jk + '"]');
+              if (r) r.checked = true;
+            }
+            this._hitungValidasi();
+            UI.toast('Draf dipulihkan.', 'success');
+          } }
+      ]
+    });
   },
 
   _hitungValidasi() {
@@ -939,8 +1128,12 @@ PAGES.pasienForm = {
     if (this._berkas.resep) { d.resepBase64 = this._berkas.resep.base64; d.resepMime = this._berkas.resep.mime; }
     if (this._p && this._p.foto && !this._berkas.foto) d.fotoUrl = this._p.foto;
 
+    // Penyimpanan pasien menunggu konfirmasi server: ini satu-satunya sumber
+    // ID pasien, dan layar berikutnya bergantung padanya.
     const res = await API.kirim('savePasien', d);
     if (res.success) {
+      Store.hapusDraf(this._namaDraf);
+      Router._snapshot = {};                 // daftar & dashboard perlu digambar ulang
       location.hash = '#/pasien/' + (res.data && res.data.id ? res.data.id : '');
     }
   }

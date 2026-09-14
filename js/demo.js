@@ -240,6 +240,19 @@ const DEMO = {
       case 'logout': return this._ok(null, 'Anda telah keluar dari sistem.');
       case 'me':     return this._ok(db.akunAktif);
 
+      /* ---- Muat awal komposit ---- */
+      case 'bootstrap': {
+        const [dash, pas, set] = await Promise.all([
+          this.jawab('dashboard', {}), this.jawab('listPasien', {}), this.jawab('getPengaturan', {})
+        ]);
+        const hasil = {
+          dashboard: dash.data, pasien: pas.data, pengaturan: set.data,
+          server: { versi: '1.1.0', waktu: new Date().toISOString() }
+        };
+        if (API.isSuperAdmin()) hasil.akun = (await this.jawab('listAkun', {})).data;
+        return this._ok(hasil, 'Data awal dimuat.');
+      }
+
       /* ---- Dashboard ---- */
       case 'dashboard': {
         const hariIni = UI.hariIni();

@@ -478,6 +478,7 @@ table.data .cell-meta   { font-family: var(--font-ui); font-size: 11px; color: v
 }
 .nav-item svg { width: 20px; height: 20px; flex: none; }
 .nav-item:hover { background: var(--canvas); color: var(--ink); }
+.nav-item:active { transform: scale(.985); }
 .nav-item.is-active {
   background: var(--accent-soft); color: var(--primary-deep); font-weight: 700;
 }
@@ -535,6 +536,23 @@ table.data .cell-meta   { font-family: var(--font-ui); font-size: 11px; color: v
 
 .page { padding: var(--s-8); max-width: 1400px; width: 100%; margin: 0 auto; }
 .page > * + * { margin-top: var(--s-6); }
+
+/* Animasi masuk hanya dipakai saat halaman digambar pertama kali. Kunjungan
+   berikutnya langsung memakai gambar tersimpan — tanpa animasi, tanpa jeda. */
+.konten-masuk { animation: kontenMasuk .16s ease-out; }
+@keyframes kontenMasuk {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Baris yang sedang disinkronkan ke server setelah pembaruan optimistik. */
+.sinkron { position: relative; }
+.sinkron::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(27,111,168,.05), transparent);
+  background-size: 200% 100%; animation: shimmer 1.1s infinite;
+  pointer-events: none; border-radius: inherit;
+}
 
 .menu-toggle { display: none; }
 .sidebar-scrim { display: none; }
