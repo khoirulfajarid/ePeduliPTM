@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PEDULI PTM — Sistem Pengingat Digital Pengendali Penyakit Tidak Menular</title>
+
+  <meta name="description" content="Sistem informasi pengendalian Penyakit Tidak Menular: monitoring pasien hipertensi & diabetes melitus, pengingat kontrol otomatis via WhatsApp dan email, serta laporan kepatuhan kunjungan faskes.">
+  <meta name="theme-color" content="#1b6fa8">
+  <meta property="og:title" content="PEDULI PTM — Pengingat Digital Pengendali Penyakit Tidak Menular">
+  <meta property="og:description" content="Monitoring pasien PTM & pengingat kontrol otomatis H-3, H-1, dan Hari-H.">
+  <meta property="og:type" content="website">
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231b6fa8'/%3E%3Cpath d='M16 8v16M8 16h16' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#konten">Lewati ke konten utama</a>
+
+  <!-- Seluruh antarmuka dirender oleh JavaScript ke dalam wadah ini. -->
+  <div id="app" role="application" aria-label="PEDULI PTM"></div>
+
+  <!-- Wadah global: notifikasi, dialog, indikator muat -->
+  <div id="toast" class="toast-host" role="status" aria-live="polite"></div>
+  <div id="modal"></div>
+  <div id="loader" class="loader-host hidden" aria-hidden="true">
+    <div class="spinner" role="progressbar" aria-label="Memuat data"></div>
+  </div>
+
+  <!-- Urutan pemuatan WAJIB seperti di bawah — app.js selalu terakhir. -->
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/demo.js"></script>
+  <script src="js/pages.js"></script>
+  <script src="js/pages-admin.js"></script>
+  <script src="js/pages-admin2.js"></script>
+  <script src="js/pages-admin3.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
